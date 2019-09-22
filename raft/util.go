@@ -215,12 +215,14 @@ func limitSize(ents []pb.Entry, maxSize uint64) []pb.Entry {
 	}
 	size := ents[0].Size()
 	var limit int
+	// 遍历ents切片，查找小于limit的部分
 	for limit = 1; limit < len(ents); limit++ {
 		size += ents[limit].Size()
 		if uint64(size) > maxSize {
 			break
 		}
 	}
+	// 返回ents切片中limit之前的部分
 	return ents[:limit]
 }
 
