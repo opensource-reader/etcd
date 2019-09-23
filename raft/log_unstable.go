@@ -16,6 +16,15 @@ package raft
 
 import pb "go.etcd.io/etcd/raft/raftpb"
 
+// unstable 也是用来存储 Entry 记录的地方。 unstable 使用内存数组维护其中所有的 Entry，
+// 对于客户端而言，它维护了客户端请求对应的 Entry 记录；对于 Follower 节点， 它维护的是从
+// Leader 节点复制过来的 Entry 记录。 无论是 Leader 节点还是 Follower 节点，对于刚刚接收
+// 到的 Entry 记录首先都会被存储到 unstable 中。 然后按照 Raft 协议将 unstable 中缓存的
+// 这些 Entry 记录交给上层模块进行处理，上层模块会将这些 Entry 记录发送到集群的其他节点或进行
+// 保存(写入Storage中)。之后，上层模块会调用 Advance 方法通知底层的 etcd-raft 模块将
+// unstable 只对应的 Entry 记录删除（因为已经保存在Storage中）。正因为unstable中保存的entry
+// 记录并未进行持久化， 可能会因为节点故障而意外丢失，所以被成为 unstable。
+
 // unstable.entries[i] has raft log position i+unstable.offset.
 // Note that unstable.offset may be less than the highest log
 // position in storage; this means that the next write to storage
@@ -77,6 +86,8 @@ func (u *unstable) stableTo(i, t uint64) {
 	if !ok {
 		return
 	}
+
+	// 指定索引值之前的 Entry 记录都已经完成持久化，则将其之前的全部entry删除
 	// if i < offset, term is matched with the snapshot
 	// only update the unstable entries if term is matched with
 	// an unstable entry.
@@ -97,12 +108,13 @@ func (u *unstable) shrinkEntriesArray() {
 	// memory usage vs number of allocations. It could probably be improved
 	// with some focused tuning.
 	const lenMultiple = 2
+	// 检测 entries 的长度
 	if len(u.entries) == 0 {
 		u.entries = nil
 	} else if len(u.entries)*lenMultiple < cap(u.entries) {
-		newEntries := make([]pb.Entry, len(u.entries))
-		copy(newEntries, u.entries)
-		u.entries = newEntries
+		newEntries := make([]pb.Entry, len(u.entries)) // 重新创建切片
+		copy(newEntries, u.entries)                    // 复制原有切片中的数据
+		u.entries = newEntries                         // 重置 entries 字段
 	}
 }
 
@@ -119,12 +131,15 @@ func (u *unstable) restore(s pb.Snapshot) {
 }
 
 func (u *unstable) truncateAndAppend(ents []pb.Entry) {
-	after := ents[0].Index
+	after := ents[0].Index //  获取第一条追加Entry记录的索引值
 	switch {
+	// 若待追加的记录与entries中的记录正好连续, 则可以直接向entries中追加
 	case after == u.offset+uint64(len(u.entries)):
 		// after is the next index in the u.entries
 		// directly append
 		u.entries = append(u.entries, ents...)
+
+	// 直接用待追加的Entry记录替换当前的entries字段，并更新offset
 	case after <= u.offset:
 		u.logger.Infof("replace the unstable entries from index %d", after)
 		// The log is being truncated to before our current offset
@@ -132,6 +147,8 @@ func (u *unstable) truncateAndAppend(ents []pb.Entry) {
 		u.offset = after
 		u.entries = ents
 	default:
+		// after 在 offset - last之间，则after-last之间的entry记录冲突。这里会将 offset~after
+		// 中间的记录保留，抛弃 after 之后的记录，然后完成追加操作
 		// truncate to after and copy to u.entries
 		// then append
 		u.logger.Infof("truncate the unstable entries before index %d", after)
