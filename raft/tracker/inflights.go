@@ -14,20 +14,29 @@
 
 package tracker
 
+// 主要记录已经发出但是还未收到响应的 MsgApp 消息
+
 // Inflights limits the number of MsgApp (represented by the largest index
 // contained within) sent to followers but not yet acknowledged by them. Callers
 // use Full() to check whether more messages can be sent, call Add() whenever
 // they are sending a new append, and release "quota" via FreeLE() whenever an
 // ack is received.
 type Inflights struct {
+
+	// Inflights.buffer 数组被当作环形数组使用。start字段记录buffer
+	// 第一条消息的下标
 	// the starting index in the buffer
 	start int
+
+	// inflights 记录的消息个数
 	// number of inflights in the buffer
 	count int
 
+	// 消息个数上限
 	// the size of the buffer
 	size int
 
+	// 记录msgapp消息相关的数组，其中记录的是MsgApp消息中最后一条Entry记录的索引值
 	// buffer contains the index of the last entry
 	// inside one message.
 	buffer []uint64
@@ -53,14 +62,18 @@ func (in *Inflights) Clone() *Inflights {
 // for one more message, and consecutive calls to add Add() must provide a
 // monotonic sequence of indexes.
 func (in *Inflights) Add(inflight uint64) {
-	if in.Full() {
+	if in.Full() { // 检测当前buffer数组是否已经被填充满了
 		panic("cannot add into a Full inflights")
 	}
-	next := in.start + in.count
+
+	// 1 + 19
+	// 20
+	next := in.start + in.count // 获取新增消息的下标
 	size := in.size
-	if next >= size {
+	if next >= size { // 大于总长度
 		next -= size
 	}
+	// 扩容
 	if next >= len(in.buffer) {
 		in.grow()
 	}
